@@ -1,0 +1,115 @@
+name: Python security scan (reachability-filtered pip-audit)
+description: >-
+  Run pip-audit against a uv-managed Python project, then use opencode + an
+  OpenRouter LLM to filter the findings down to vulnerabilities that are
+  actually reachable from this project's declared entry points. Diffs against
+  a cached state file so only newly-introduced reachable CVEs are surfaced.
+  Python-specific: requires a pyproject.toml at the repo root, scans the
+  resolved Python dependency graph, and the reachability prompt assumes
+  Python module/import semantics.
+author: peakford
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  project-name:
+    description: >-
+      Project identifier. Used as the state filename (`<project>.json`) and as
+      the default Pushover notification title prefix. Casing is preserved
+      verbatim, so pass `MyProject` rather than `myproject` if you want that.
+    required: true
+  entry-points:
+    description: >-
+      Multi-line text injected into the opencode reachability prompt under
+      "Entry points to consider". Describe how this project's code is
+      actually invoked (HTTP handlers, task queues, CLI entry points,
+      import-time module code, etc.). Required — no default, since defaults
+      tend to bleed stale framework assumptions across projects.
+    required: true
+  model:
+    description: OpenRouter model id passed to opencode as `openrouter/<model>`.
+    required: false
+    default: z-ai/glm-5.1
+  notify:
+    description: >-
+      Whether to deliver a Pushover alert when a new reachable CVE is found.
+      Requires PUSHOVER_USER_KEY + PUSHOVER_APP_KEY env in the calling job.
+    required: false
+    default: 'true'
+  notification-title:
+    description: >-
+      Pushover notification title. Defaults to `<project-name>: new reachable CVE`
+      when empty.
+    required: false
+    default: ''
+  state-key-file:
+    description: >-
+      File whose hash is used as the cache key for the persisted scan state
+      (so a lockfile change invalidates and forces re-scoring of every vuln).
+    required: false
+    default: uv.lock
+  python-script-args:
+    description: Escape hatch for extra CLI flags forwarded to security_scan_ci.py.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+
+    - name: Compute opencode cache key (rotates weekly)
+      id: oc-key
+      shell: bash
+      run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache opencode
+      uses: actions/cache@v4
+      with:
+        path: ~/.opencode
+        key: opencode-${{ runner.os }}-${{ steps.oc-key.outputs.week }}
+
+    - name: Install opencode
+      shell: bash
+      run: |
+        if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+          curl -fsSL https://opencode.ai/install | bash
+        fi
+        echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+    - name: Resolve state directory
+      id: state
+      shell: bash
+      run: |
+        dir="${STATE_DIR:-$GITHUB_WORKSPACE/.security-state}"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "STATE_DIR=$dir" >> "$GITHUB_ENV"
+
+    - name: Restore CVE state cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.state.outputs.dir }}
+        key: pip-audit-state-${{ hashFiles(inputs.state-key-file) }}
+        restore-keys: |
+          pip-audit-state-
+
+    - name: Run reachability scan
+      shell: bash
+      env:
+        SCAN_PROJECT: ${{ inputs.project-name }}
+        SCAN_ENTRY_POINTS: ${{ inputs.entry-points }}
+        SCAN_MODEL: ${{ inputs.model }}
+        SCAN_NOTIFICATION_TITLE: ${{ inputs.notification-title }}
+      run: |
+        notify_flag=""
+        if [ "${{ inputs.notify }}" = "true" ]; then
+          notify_flag="--notify"
+        fi
+        # shellcheck disable=SC2086
+        uv run python "$GITHUB_ACTION_PATH/scripts/security_scan_ci.py" \
+          $notify_flag ${{ inputs.python-script-args }}
