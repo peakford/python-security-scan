@@ -2,7 +2,7 @@
 
 Reachability-filtered `pip-audit` for Python CI, as a reusable composite
 action. Runs `pip-audit` against a uv-managed Python project, diffs against a
-cached state file, then asks an LLM (via [opencode] + OpenRouter) whether each
+cached state file, then asks an LLM (via [pi] + OpenRouter) whether each
 *new* vulnerability is actually reachable from the entry points you declare.
 Only new + reachable CVEs surface as job failures (and optional Pushover
 alerts).
@@ -20,7 +20,7 @@ There are several existing actions that wrap pip-audit (e.g.
 products (Aikido, Semgrep). This action is the first OSS combination of the
 two that I'm aware of, scoped narrowly to Python.
 
-[opencode]: https://opencode.ai
+[pi]: https://github.com/badlogic/pi-mono
 [semgrep-reachability]: https://semgrep.dev/blog/2022/by-the-numbers-best-and-worst-vulnerable-dependencies-in-modern-applications/
 [pypa-action]: https://github.com/pypa/gh-action-pip-audit
 
@@ -78,8 +78,8 @@ The action does **not** check out the repository for you — add
 | name                 | required | default                                  | purpose |
 |----------------------|----------|------------------------------------------|---------|
 | `project-name`       | yes      | —                                        | Used for the state filename and default Pushover title. Casing is preserved. |
-| `entry-points`       | yes      | —                                        | Multi-line text injected into the opencode prompt under "Entry points to consider". |
-| `model`              | no       | `z-ai/glm-5.1`                           | OpenRouter model id, passed to opencode as `openrouter/<model>`. |
+| `entry-points`       | yes      | —                                        | Multi-line text injected into the pi prompt under "Entry points to consider". |
+| `model`              | no       | `z-ai/glm-5.1`                           | OpenRouter model id, passed to pi as `--provider openrouter --model <id>`. |
 | `notify`             | no       | `true`                                   | Whether to send a Pushover alert when a new reachable CVE is found. |
 | `notification-title` | no       | `<project-name>: new reachable CVE`      | Pushover notification title. |
 | `state-key-file`     | no       | `uv.lock`                                | File whose hash invalidates the persisted scan state cache. |
@@ -92,7 +92,7 @@ composite-action inspection:
 
 | env var             | required | purpose |
 |---------------------|----------|---------|
-| `OPENROUTER_API_KEY`| yes      | Consumed by opencode to call the chosen model. |
+| `OPENROUTER_API_KEY`| yes      | Consumed by pi to call the chosen model. |
 | `PUSHOVER_USER_KEY` | when notifying | Pushover user key. |
 | `PUSHOVER_APP_KEY`  | when notifying | Pushover application token. |
 

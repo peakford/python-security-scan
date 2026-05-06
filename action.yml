@@ -1,12 +1,12 @@
 name: Python security scan (reachability-filtered pip-audit)
 description: >-
-  Run pip-audit against a uv-managed Python project, then use opencode + an
-  OpenRouter LLM to filter the findings down to vulnerabilities that are
-  actually reachable from this project's declared entry points. Diffs against
-  a cached state file so only newly-introduced reachable CVEs are surfaced.
-  Python-specific: requires a pyproject.toml at the repo root, scans the
-  resolved Python dependency graph, and the reachability prompt assumes
-  Python module/import semantics.
+  Run pip-audit against a uv-managed Python project, then use pi
+  (pi-coding-agent) + an OpenRouter LLM to filter the findings down to
+  vulnerabilities that are actually reachable from this project's declared
+  entry points. Diffs against a cached state file so only newly-introduced
+  reachable CVEs are surfaced. Python-specific: requires a pyproject.toml at
+  the repo root, scans the resolved Python dependency graph, and the
+  reachability prompt assumes Python module/import semantics.
 author: peakford
 
 branding:
@@ -22,14 +22,16 @@ inputs:
     required: true
   entry-points:
     description: >-
-      Multi-line text injected into the opencode reachability prompt under
+      Multi-line text injected into the pi reachability prompt under
       "Entry points to consider". Describe how this project's code is
       actually invoked (HTTP handlers, task queues, CLI entry points,
       import-time module code, etc.). Required — no default, since defaults
       tend to bleed stale framework assumptions across projects.
     required: true
   model:
-    description: OpenRouter model id passed to opencode as `openrouter/<model>`.
+    description: >-
+      OpenRouter model id, passed to pi as `--provider openrouter --model
+      <id>`.
     required: false
     default: z-ai/glm-5.1
   notify:
@@ -63,24 +65,30 @@ runs:
       with:
         enable-cache: true
 
-    - name: Compute opencode cache key (rotates weekly)
-      id: oc-key
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 'lts/*'
+
+    - name: Compute pi cache key (rotates weekly)
+      id: pi-key
       shell: bash
       run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
-    - name: Cache opencode
+    - name: Cache pi
       uses: actions/cache@v4
       with:
-        path: ~/.opencode
-        key: opencode-${{ runner.os }}-${{ steps.oc-key.outputs.week }}
+        path: ~/.pi-npm
+        key: pi-${{ runner.os }}-${{ steps.pi-key.outputs.week }}
 
-    - name: Install opencode
+    - name: Install pi
       shell: bash
       run: |
-        if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
-          curl -fsSL https://opencode.ai/install | bash
+        npm config set prefix "$HOME/.pi-npm"
+        echo "$HOME/.pi-npm/bin" >> "$GITHUB_PATH"
+        if ! [ -x "$HOME/.pi-npm/bin/pi" ]; then
+          npm install -g @mariozechner/pi-coding-agent
         fi
-        echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
     - name: Resolve state directory
       id: state

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# security_scan_ci.py — pip-audit + opencode reachability filter for CI.
+# security_scan_ci.py — pip-audit + pi reachability filter for CI.
 #
 # Runs pip-audit against a uv-managed Python project, diffs against a cached
-# state file, asks opencode (via OpenRouter) whether each new vuln is
-# reachable from the project's declared entry points, and emits a summary
+# state file, asks pi (pi-coding-agent, via OpenRouter) whether each new vuln
+# is reachable from the project's declared entry points, and emits a summary
 # (and optional Pushover alert) when at least one new + reachable CVE is
 # confirmed.
 #
@@ -12,13 +12,13 @@
 #                        Pushover title); preserve exact casing
 #   SCAN_ENTRY_POINTS    multi-line text describing the project's entry points
 #                        (HTTP handlers, task queues, CLI commands, ...) for
-#                        the opencode reachability prompt
+#                        the pi reachability prompt
 #
 # Optional environment:
 #   SCAN_MODEL                OpenRouter model id (default: z-ai/glm-5.1)
 #   SCAN_NOTIFICATION_TITLE   Pushover title (default: "<project>: new reachable CVE")
 #   STATE_DIR                 cache dir for state file (default: ~/.cache/security-scan-ci)
-#   OPENROUTER_API_KEY        consumed by opencode itself
+#   OPENROUTER_API_KEY        consumed by pi itself
 #   PUSHOVER_USER_KEY         + PUSHOVER_APP_KEY: enable Pushover delivery
 #
 # Exit codes:
@@ -138,9 +138,9 @@ def dev_only_packages(project_root: pathlib.Path) -> set[str]:
     return dev - prod
 
 
-def _build_opencode_prompt(project_root: pathlib.Path, entry_points: str,
-                           pkg: str, ver: str, vid: str,
-                           aliases: str, fixes: str, desc: str) -> str:
+def _build_reach_prompt(project_root: pathlib.Path, entry_points: str,
+                        pkg: str, ver: str, vid: str,
+                        aliases: str, fixes: str, desc: str) -> str:
     return (
         "You are checking whether a Python package vulnerability is reachable in this codebase.\n"
         "\n"
@@ -159,16 +159,16 @@ def _build_opencode_prompt(project_root: pathlib.Path, entry_points: str,
         "that is present only because another library vendors it — but which our\n"
         "own code never calls into a vulnerable surface of — is NOT reachable.\n"
         "\n"
-        "Use the Grep/Read/Glob tools to confirm. Be efficient: 5-10 tool calls max.\n"
+        "Use the grep/read/find/ls tools to confirm. Be efficient: 5-10 tool calls max.\n"
         "\n"
         "On the LAST line of your reply, output ONLY this JSON (no code fences, no extra text):\n"
         '{"reachable": true|false, "confidence": "high|medium|low", "note": "<=120 chars"}'
     )
 
 
-def opencode_reach_check(project_root: pathlib.Path, entry_points: str,
-                         model: str, vuln: dict) -> dict:
-    prompt = _build_opencode_prompt(
+def pi_reach_check(project_root: pathlib.Path, entry_points: str,
+                   model: str, vuln: dict) -> dict:
+    prompt = _build_reach_prompt(
         project_root, entry_points,
         vuln["pkg"], vuln["ver"], vuln["id"],
         ", ".join(vuln["aliases"]),
@@ -177,55 +177,35 @@ def opencode_reach_check(project_root: pathlib.Path, entry_points: str,
     )
     try:
         proc = subprocess.run(
-            ["opencode", "run",
-             "--agent", "build",
-             "--model", f"openrouter/{model}",
-             "--format", "json",
-             "--dangerously-skip-permissions",
-             "--dir", str(project_root),
-             "--", prompt],
+            ["pi",
+             "-p",
+             "--no-session",
+             "--no-context-files",
+             "--provider", "openrouter",
+             "--model", model,
+             prompt],
+            cwd=str(project_root),
             capture_output=True, text=True, timeout=300, check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         excerpt = str(e)[:200].replace('"', "'").replace("\n", " ")
-        log(f"opencode invocation failed: {e}")
+        log(f"pi invocation failed: {e}")
         return {"reachable": True, "confidence": "low",
-                "note": f"opencode invocation failed: {excerpt}",
+                "note": f"pi invocation failed: {excerpt}",
                 "source": "error"}
 
     if proc.returncode != 0:
-        log(f"opencode rc={proc.returncode}; stderr:")
+        log(f"pi rc={proc.returncode}; stderr:")
         sys.stderr.write(proc.stderr[:2000])
         if not proc.stderr.endswith("\n"):
             sys.stderr.write("\n")
         excerpt = (proc.stderr[:200] or "no stderr").replace("\n", " ").replace('"', "'")
         return {"reachable": True, "confidence": "low",
-                "note": f"opencode rc={proc.returncode}: {excerpt}",
-                "source": "error"}
-
-    text_chunks: list[str] = []
-    for raw in proc.stdout.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict) and obj.get("type") == "text":
-            part = obj.get("part") or {}
-            t = part.get("text") or ""
-            if t:
-                text_chunks.append(t)
-
-    result_text = "".join(text_chunks)
-    if not result_text:
-        return {"reachable": True, "confidence": "low",
-                "note": "empty opencode result envelope",
+                "note": f"pi rc={proc.returncode}: {excerpt}",
                 "source": "error"}
 
     last = ""
-    for line in result_text.splitlines():
+    for line in proc.stdout.splitlines():
         stripped = line.strip()
         if stripped:
             last = stripped
@@ -239,9 +219,9 @@ def opencode_reach_check(project_root: pathlib.Path, entry_points: str,
             verdict = None
     if verdict is None:
         return {"reachable": True, "confidence": "low",
-                "note": "unparseable opencode verdict; review manually",
+                "note": "unparseable pi verdict; review manually",
                 "source": "error"}
-    verdict["source"] = "opencode"
+    verdict["source"] = "pi"
     return verdict
 
 
@@ -255,10 +235,10 @@ def verify_reachability(project_root: pathlib.Path, entry_points: str,
         if pkg_norm in dev_only:
             verdict = {"reachable": False, "confidence": "high",
                        "note": "dev-only dependency", "source": "dev-filter"}
-            log(f"  {key} -> dev-only, skipping opencode")
+            log(f"  {key} -> dev-only, skipping pi")
         else:
-            log(f"  {key} -> asking opencode...")
-            verdict = opencode_reach_check(project_root, entry_points, model, vuln)
+            log(f"  {key} -> asking pi...")
+            verdict = pi_reach_check(project_root, entry_points, model, vuln)
         results[key] = verdict
     return results
 
