@@ -99,14 +99,16 @@ runs:
         echo "STATE_DIR=$dir" >> "$GITHUB_ENV"
 
     - name: Restore CVE state cache
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: ${{ steps.state.outputs.dir }}
-        key: pip-audit-state-${{ hashFiles(inputs.state-key-file) }}
+        key: pip-audit-state-${{ hashFiles(inputs.state-key-file) }}-${{ github.run_id }}
         restore-keys: |
+          pip-audit-state-${{ hashFiles(inputs.state-key-file) }}-
           pip-audit-state-
 
     - name: Run reachability scan
+      id: scan
       shell: bash
       env:
         SCAN_PROJECT: ${{ inputs.project-name }}
@@ -121,3 +123,10 @@ runs:
         # shellcheck disable=SC2086
         uv run python "$GITHUB_ACTION_PATH/scripts/security_scan_ci.py" \
           $notify_flag ${{ inputs.python-script-args }}
+
+    - name: Save CVE state cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.state.outputs.dir }}
+        key: pip-audit-state-${{ hashFiles(inputs.state-key-file) }}-${{ github.run_id }}

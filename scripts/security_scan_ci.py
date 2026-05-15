@@ -332,6 +332,11 @@ def main() -> int:
     except json.JSONDecodeError:
         prev_state = {"last_run": None, "seen": {}}
 
+    log(
+        f"loaded prev_state: seen={len((prev_state or {}).get('seen') or {})} "
+        f"entries, last_run={(prev_state or {}).get('last_run')}"
+    )
+
     try:
         audit_data = run_pip_audit()
     except ScannerError as e:
@@ -342,8 +347,9 @@ def main() -> int:
     ts = utcnow()
 
     if not current:
-        atomic_write_json(state_file, {"last_run": ts, "seen": {}})
-        log("pip-audit found 0 vulns; state reset.")
+        next_state = {"last_run": ts, "seen": (prev_state or {}).get("seen") or {}}
+        atomic_write_json(state_file, next_state)
+        log("pip-audit found 0 vulns; state preserved.")
         return 0
 
     new_keys = compute_diff(current, prev_state)
